@@ -7,6 +7,91 @@
 #include "Components/AudioComponent.h"
 #include "SeqExPrivate.h"
 
+struct FPlayAudioRuntimeData : IPersistentEvaluationData
+{
+	class UAudioComponent* AudioComp = nullptr;
+	bool playing = false;
+	EPlayDirection PlayDir = EPlayDirection::Forwards;
+};
+
+struct FPlayAudioTokenToken : IMovieSceneExecutionToken
+{
+	const UPlayAudioSection* Section;
+
+	FPlayAudioTokenToken(const UPlayAudioSection* InSection)
+		: Section(InSection)
+	{}
+
+	virtual void Execute(const FMovieSceneContext& Context, const FMovieSceneEvaluationOperand& Operand, FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) override
+	{
+		if (!Section)
+		{
+			return;
+		}
+		if (!GWorld || !GWorld->IsGameWorld())
+		{
+			return;
+		}
+
+		if (GWorld->IsGameWorld() && (Player.AsUObject() == NULL || Player.AsUObject()->GetWorld() == NULL || !Player.AsUObject()->GetWorld()->IsValidLowLevel()))
+		{
+			return;
+		}
+
+		auto& RuntimeData = PersistentData.GetOrAddTrackData<FPlayAudioRuntimeData>();
+
+		if ((Context.GetStatus() != EMovieScenePlayerStatus::Playing && Context.GetStatus() != EMovieScenePlayerStatus::Scrubbing) || Context.HasJumped())
+		{
+			// stopped, recording, etc
+			if (RuntimeData.AudioComp)
+			{
+				RuntimeData.AudioComp->Stop();
+			}
+			RuntimeData.playing = false;
+			SeqExLog_Debug(Section, FString::Printf(TEXT("播放音频, 停止播放")));
+			return;
+		}
+
+		if (RuntimeData.PlayDir != Context.GetDirection())
+		{
+			// 重新计算时间
+			RuntimeData.PlayDir = Context.GetDirection();
+			if (RuntimeData.AudioComp)
+			{
+				RuntimeData.AudioComp->Stop();
+			}
+			RuntimeData.playing = false;
+			SeqExLog_Debug(Section, FString::Printf(TEXT("播放音频, 更换方向:%d. this=%p, Section=%p"), RuntimeData.PlayDir, this, Section));
+		}
+
+		if (RuntimeData.AudioComp)
+		{
+			RuntimeData.AudioComp->SetWorldLocation(RuntimeData.AudioComp->GetOwner()->GetActorLocation());
+		}
+		if (!RuntimeData.playing && RuntimeData.AudioComp)
+		{
+			RuntimeData.AudioComp->Sound = Section->Sound;
+			//Section->AudioComp->Play();
+
+			auto T1 = (Context.GetTime() - FFrameTime(Section->GetInclusiveStartFrame())).AsDecimal();
+			if (Context.GetDirection() == EPlayDirection::Backwards)
+			{
+				auto T2 = (FFrameTime(Section->GetExclusiveEndFrame()) - Context.GetTime()).AsDecimal();
+				T1 = FMath::Min<double>(T1, FMath::Abs<double>(T2));
+			}
+
+			const float ImageSequenceTime =
+				FFrameTime::FromDecimal(T1) / Context.GetFrameRate();
+
+			RuntimeData.AudioComp->Play(ImageSequenceTime);
+			RuntimeData.playing = true;
+			SeqExLog_Debug(Section, FString::Printf(TEXT("播放音频：%.2f. Start=%.2f, End=%.2f"), ImageSequenceTime,
+				Context.GetFrameRate().AsSeconds(FFrameTime(Section->GetInclusiveStartFrame())),
+				Context.GetFrameRate().AsSeconds(FFrameTime(Section->GetExclusiveEndFrame()))));
+		}
+	}
+};
+
 FPlayAudioEvalTemplate::FPlayAudioEvalTemplate()
 {
 	Section = NULL;
@@ -21,39 +106,7 @@ void FPlayAudioEvalTemplate::Evaluate(const FMovieSceneEvaluationOperand& Operan
 {
 	SeqExLog_Debug(FString::Printf(TEXT("FPlayAudioEvalTemplate::Evaluate")));
 
-	if (!Section)
-	{
-		return;
-	}
-	if (!GWorld || !GWorld->IsGameWorld())
-	{
-		return;
-	}
-	if ((Context.GetStatus() != EMovieScenePlayerStatus::Playing && Context.GetStatus() != EMovieScenePlayerStatus::Scrubbing) || Context.HasJumped() || Context.GetDirection() == EPlayDirection::Backwards)
-	{
-		// stopped, recording, etc
-		if (Section->AudioComp)
-		{
-			Section->AudioComp->Stop();
-		}
-		const_cast<UPlayAudioSection*>(Section)->playing = false;
-		return;
-	}
-
-	if (Section->AudioComp)
-	{
-		Section->AudioComp->SetWorldLocation(Section->AudioComp->GetOwner()->GetActorLocation());
-	}
-	if (!Section->playing && Section->AudioComp)
-	{
-		Section->AudioComp->Sound = Section->Sound;
-		//Section->AudioComp->Play();
-
-		const float ImageSequenceTime =
-			FFrameTime::FromDecimal((Context.GetTime() - FFrameTime(Section->GetInclusiveStartFrame())).AsDecimal()) / Context.GetFrameRate();
-		Section->AudioComp->Play(ImageSequenceTime);
-		const_cast<UPlayAudioSection*>(Section)->playing = true;
-	}
+	ExecutionTokens.Add(FPlayAudioTokenToken(Section));
 }
 
 //FString ToString(const FMovieSceneObjectBindingID& ID, IMovieScenePlayer& Player)
@@ -78,6 +131,9 @@ void FPlayAudioEvalTemplate::Setup(FPersistentEvaluationData& PersistentData, IM
 	{
 		return;
 	}
+
+	auto& RuntimeData = PersistentData.GetOrAddTrackData<FPlayAudioRuntimeData>();
+
 	// 触发
 	SeqExLog_Debug(FString::Printf(TEXT("FPlayAudioEvalTemplate::Setup:%s. Sound=%s"), *ToString(Section->BindingId, Player), *Section->Sound->GetFullName()));
 	//SetBindingActorVisible(Section->BindingId, Player, false);
@@ -99,8 +155,8 @@ void FPlayAudioEvalTemplate::Setup(FPersistentEvaluationData& PersistentData, IM
 	if (Actor)
 	{
 		UAudioComponent* AudioComp = NewObject<UAudioComponent>(Actor, UAudioComponent::StaticClass());
-		const_cast<UPlayAudioSection*>(Section)->playing = false;
-		const_cast<UPlayAudioSection*>(Section)->AudioComp = AudioComp;
+		RuntimeData.playing = false;
+		RuntimeData.AudioComp = AudioComp;
 		AudioComp->OnComponentCreated();
 		AudioComp->RegisterComponent();
 		//auto AudioComp = Cast<UAudioComponent>(Actor->CreateComponentFromTemplate(UAudioComponent::StaticClass()));
@@ -110,6 +166,8 @@ void FPlayAudioEvalTemplate::Setup(FPersistentEvaluationData& PersistentData, IM
 			AudioComp->Play();
 		}
 	}
+	SeqExLog_Debug(Section, FString::Printf(TEXT("播放音频, Setup. this=%p, Section=%p, Actor=%p, Player=%p"), 
+		this, Section, Actor, Player.AsUObject()));
 }
 
 void FPlayAudioEvalTemplate::TearDown(FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) const
@@ -129,11 +187,16 @@ void FPlayAudioEvalTemplate::TearDown(FPersistentEvaluationData& PersistentData,
 		return;
 	}
 	
-	if (Section->AudioComp && !Section->notDestory)
+	auto RuntimeDataPtr = PersistentData.FindTrackData<FPlayAudioRuntimeData>();
+	if (RuntimeDataPtr != nullptr)
 	{
-		Section->AudioComp->Stop();
-		Section->AudioComp->Sound = nullptr;
+		auto& RuntimeData = *RuntimeDataPtr;
+		if (RuntimeData.AudioComp && !Section->notDestory)
+		{
+			RuntimeData.AudioComp->Stop();
+			RuntimeData.AudioComp->Sound = nullptr;
+		}
 	}
 
-	SeqExLog_Debug(FString::Printf(TEXT("FPlayAudioEvalTemplate::TearDown")));
+	SeqExLog_Debug(Section, FString::Printf(TEXT("播放音频, TearDown")));
 }

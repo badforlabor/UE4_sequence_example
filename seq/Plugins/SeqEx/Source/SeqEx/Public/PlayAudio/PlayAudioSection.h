@@ -29,8 +29,4 @@ public:
 		class USoundBase* Sound;
 	UPROPERTY(EditAnywhere)
 		bool notDestory;
-	UPROPERTY(Transient)
-		class UAudioComponent* AudioComp;
-	UPROPERTY(Transient)
-		bool playing;
 };
