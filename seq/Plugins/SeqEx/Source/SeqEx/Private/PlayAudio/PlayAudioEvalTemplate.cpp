@@ -9,7 +9,7 @@
 
 struct FPlayAudioRuntimeData : IPersistentEvaluationData
 {
-	class UAudioComponent* AudioComp = nullptr;
+	TWeakObjectPtr<class UAudioComponent> AudioComp = nullptr;
 	bool playing = false;
 	EPlayDirection PlayDir = EPlayDirection::Forwards;
 };
@@ -43,7 +43,7 @@ struct FPlayAudioTokenToken : IMovieSceneExecutionToken
 		if ((Context.GetStatus() != EMovieScenePlayerStatus::Playing && Context.GetStatus() != EMovieScenePlayerStatus::Scrubbing) || Context.HasJumped())
 		{
 			// stopped, recording, etc
-			if (RuntimeData.AudioComp)
+			if (RuntimeData.AudioComp.IsValid())
 			{
 				RuntimeData.AudioComp->Stop();
 			}
@@ -56,7 +56,7 @@ struct FPlayAudioTokenToken : IMovieSceneExecutionToken
 		{
 			// 重新计算时间
 			RuntimeData.PlayDir = Context.GetDirection();
-			if (RuntimeData.AudioComp)
+			if (RuntimeData.AudioComp.IsValid())
 			{
 				RuntimeData.AudioComp->Stop();
 			}
@@ -64,11 +64,11 @@ struct FPlayAudioTokenToken : IMovieSceneExecutionToken
 			SeqExLog_Debug(Section, FString::Printf(TEXT("播放音频, 更换方向:%d. this=%p, Section=%p"), RuntimeData.PlayDir, this, Section));
 		}
 
-		if (RuntimeData.AudioComp)
+		if (RuntimeData.AudioComp.IsValid())
 		{
 			RuntimeData.AudioComp->SetWorldLocation(RuntimeData.AudioComp->GetOwner()->GetActorLocation());
 		}
-		if (!RuntimeData.playing && RuntimeData.AudioComp)
+		if (!RuntimeData.playing && RuntimeData.AudioComp.IsValid())
 		{
 			RuntimeData.AudioComp->Sound = Section->Sound;
 			//Section->AudioComp->Play();
@@ -191,7 +191,7 @@ void FPlayAudioEvalTemplate::TearDown(FPersistentEvaluationData& PersistentData,
 	if (RuntimeDataPtr != nullptr)
 	{
 		auto& RuntimeData = *RuntimeDataPtr;
-		if (RuntimeData.AudioComp && !Section->notDestory)
+		if (RuntimeData.AudioComp.IsValid() && !Section->notDestory)
 		{
 			RuntimeData.AudioComp->Stop();
 			RuntimeData.AudioComp->Sound = nullptr;
