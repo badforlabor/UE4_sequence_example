@@ -64,6 +64,46 @@ struct FPlayAudioTokenToken : IMovieSceneExecutionToken
 			SeqExLog_Debug(Section, FString::Printf(TEXT("播放音频, 更换方向:%d. this=%p, Section=%p"), RuntimeData.PlayDir, this, Section));
 		}
 
+		// 如果没有音频组件，那么添加
+		if (!RuntimeData.AudioComp.IsValid())
+		{
+			AActor* Actor = NULL;
+
+			auto ID = Section->BindingId;
+			for (TWeakObjectPtr<> WeakEventContext : Player.FindBoundObjects(Operand))
+			{
+				if (UObject* EventContext = WeakEventContext.Get())
+				{
+					Actor = Cast<AActor>(EventContext);
+					if (Actor != NULL)
+					{
+						break;
+					}
+				}
+			}
+
+			if (Actor)
+			{
+				UAudioComponent* AudioComp = NewObject<UAudioComponent>(Actor, UAudioComponent::StaticClass());
+				RuntimeData.playing = false;
+				RuntimeData.AudioComp = AudioComp;
+				AudioComp->OnComponentCreated();
+				AudioComp->RegisterComponent();
+				//auto AudioComp = Cast<UAudioComponent>(Actor->CreateComponentFromTemplate(UAudioComponent::StaticClass()));
+				if (false && AudioComp)
+				{
+					AudioComp->Sound = Section->Sound;
+					AudioComp->Play();
+				}
+				SeqExLog_Debug(Actor, FString::Printf(TEXT("播放音频, Setup. Audio=%s"),
+					*GetNameSafe(Section->Sound)));
+			}
+			SeqExLog_Debug(Section, FString::Printf(TEXT("播放音频, Setup. this=%p, Section=%p, Actor=%p, Player=%p"),
+				this, Section, Actor, Player.AsUObject()));
+		}
+
+		// 更新位置
+
 		if (RuntimeData.AudioComp.IsValid())
 		{
 			RuntimeData.AudioComp->SetWorldLocation(RuntimeData.AudioComp->GetOwner()->GetActorLocation());
@@ -131,43 +171,6 @@ void FPlayAudioEvalTemplate::Setup(FPersistentEvaluationData& PersistentData, IM
 	{
 		return;
 	}
-
-	auto& RuntimeData = PersistentData.GetOrAddTrackData<FPlayAudioRuntimeData>();
-
-	// 触发
-	SeqExLog_Debug(FString::Printf(TEXT("FPlayAudioEvalTemplate::Setup:%s. Sound=%s"), *ToString(Section->BindingId, Player), *Section->Sound->GetFullName()));
-	//SetBindingActorVisible(Section->BindingId, Player, false);
-	AActor* Actor = NULL;
-
-	auto ID = Section->BindingId;
-	for (TWeakObjectPtr<> WeakEventContext : Player.FindBoundObjects(ID.GetGuid(), ID.GetSequenceID()))
-	{
-		if (UObject* EventContext = WeakEventContext.Get())
-		{
-			Actor = Cast<AActor>(EventContext);
-			if (Actor != NULL)
-			{
-				break;
-			}
-		}
-	}
-
-	if (Actor)
-	{
-		UAudioComponent* AudioComp = NewObject<UAudioComponent>(Actor, UAudioComponent::StaticClass());
-		RuntimeData.playing = false;
-		RuntimeData.AudioComp = AudioComp;
-		AudioComp->OnComponentCreated();
-		AudioComp->RegisterComponent();
-		//auto AudioComp = Cast<UAudioComponent>(Actor->CreateComponentFromTemplate(UAudioComponent::StaticClass()));
-		if (false && AudioComp)
-		{
-			AudioComp->Sound = Section->Sound;
-			AudioComp->Play();
-		}
-	}
-	SeqExLog_Debug(Section, FString::Printf(TEXT("播放音频, Setup. this=%p, Section=%p, Actor=%p, Player=%p"), 
-		this, Section, Actor, Player.AsUObject()));
 }
 
 void FPlayAudioEvalTemplate::TearDown(FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) const
